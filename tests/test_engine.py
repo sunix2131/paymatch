@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 import pytest
 
@@ -11,6 +12,38 @@ from payment_reconciliation.engine import reconcile
 from payment_reconciliation.loaders import normalize_reference
 
 NOW = datetime(2026, 8, 1, 9, 0, tzinfo=UTC)
+
+
+def test_amount_tolerance_is_independent_of_callers_decimal_context() -> None:
+    with localcontext() as context:
+        context.prec = 6
+        report = reconcile(
+            [transaction("i", Source.INTERNAL, "100000000.010000001", "same")],
+            [transaction("e", Source.EXTERNAL, "100000000", "same")],
+            Rules(),
+        )
+    assert report.items[0].status is Status.AMOUNT_MISMATCH
+    assert "amount difference 0.010000001" in report.items[0].evidence
+
+
+def test_fractional_second_outside_window_does_not_receive_timestamp_score() -> None:
+    internal = transaction("i", Source.INTERNAL, "10", "same")
+    external = replace(
+        transaction("e", Source.EXTERNAL, "10", "same", seconds=300),
+        timestamp=NOW + timedelta(seconds=300, microseconds=1),
+    )
+    item = reconcile([internal], [external], Rules()).items[0]
+    assert item.score == 150
+    assert "timestamp outside configured 300s tolerance" in item.evidence
+
+
+@pytest.mark.parametrize(
+    "timestamp", [datetime.min.replace(tzinfo=UTC), datetime.max.replace(tzinfo=UTC)]
+)
+def test_timestamp_window_does_not_overflow_calendar(timestamp: datetime) -> None:
+    internal = replace(transaction("i", Source.INTERNAL, "10", "same"), timestamp=timestamp)
+    external = replace(transaction("e", Source.EXTERNAL, "10", "same"), timestamp=timestamp)
+    assert reconcile([internal], [external], Rules()).items[0].status is Status.MATCHED
 
 
 def transaction(

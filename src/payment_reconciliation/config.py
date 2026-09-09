@@ -18,9 +18,13 @@ class Rules:
 
 
 def load_rules(path: Path) -> Rules:
-    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as error:
+        raise ValueError("rules file contains invalid YAML") from error
     if not isinstance(payload, dict) or not isinstance(payload.get("rules"), list):
         raise ValueError("rules file must contain a 'rules' list")
+    _reject_unknown(payload, {"rules"})
 
     rules = Rules()
     seen: set[str] = set()

@@ -4,6 +4,7 @@ from bisect import bisect_left, bisect_right
 from collections import defaultdict, deque
 from collections.abc import Iterable
 from datetime import timedelta
+from decimal import Decimal, localcontext
 
 from payment_reconciliation.config import Rules
 from payment_reconciliation.domain import (
@@ -124,14 +125,19 @@ def _generate_candidates(
             )
     for transactions in by_currency.values():
         transactions.sort(key=lambda tx: (tx.timestamp, tx.id))
+    timestamps_by_currency = {
+        currency: [transaction.timestamp for transaction in transactions]
+        for currency, transactions in by_currency.items()
+    }
 
     candidates: list[Candidate] = []
     tolerance = timedelta(seconds=rules.timestamp_tolerance_seconds)
     for internal_tx in internal:
         currency_transactions = by_currency.get(internal_tx.currency, [])
-        timestamps = [transaction.timestamp for transaction in currency_transactions]
-        start = bisect_left(timestamps, internal_tx.timestamp - tolerance)
-        end = bisect_right(timestamps, internal_tx.timestamp + tolerance)
+        timestamps = timestamps_by_currency.get(internal_tx.currency, [])
+        # Compare deltas instead of adding the window to a date near year 1 or 9999.
+        start = bisect_left(timestamps, -tolerance, key=lambda stamp: stamp - internal_tx.timestamp)
+        end = bisect_right(timestamps, tolerance, key=lambda stamp: stamp - internal_tx.timestamp)
         possible = {transaction.id: transaction for transaction in currency_transactions[start:end]}
         if internal_tx.normalized_reference is not None:
             for transaction in by_reference.get(
@@ -140,16 +146,16 @@ def _generate_candidates(
                 possible[transaction.id] = transaction
 
         for external_tx in possible.values():
-            amount_difference = abs(internal_tx.amount - external_tx.amount)
-            time_difference = int(
-                abs((internal_tx.timestamp - external_tx.timestamp).total_seconds())
-            )
+            amount_difference = _exact_difference(internal_tx.amount, external_tx.amount)
+            time_delta = abs(internal_tx.timestamp - external_tx.timestamp)
+            seconds = time_delta.days * 86400 + time_delta.seconds
+            time_difference = Decimal(f"{seconds}.{time_delta.microseconds:06d}")
             reference_equal = (
                 internal_tx.normalized_reference is not None
                 and internal_tx.normalized_reference == external_tx.normalized_reference
             )
             amount_close = amount_difference <= rules.amount_tolerance
-            time_close = time_difference <= rules.timestamp_tolerance_seconds
+            time_close = time_delta <= tolerance
             if not reference_equal and not (amount_close and time_close):
                 continue
             score = (
@@ -172,6 +178,16 @@ def _generate_candidates(
     return tuple(
         sorted(candidates, key=lambda edge: (-edge.score, edge.internal_id, edge.external_id))
     )
+
+
+def _exact_difference(left: Decimal, right: Decimal) -> Decimal:
+    if not left.is_finite() or not right.is_finite():
+        raise ValueError("amount must be a finite decimal")
+    exponent = min(int(left.as_tuple().exponent), int(right.as_tuple().exponent))
+    precision = max(left.adjusted(), right.adjusted()) - exponent + 2
+    with localcontext() as context:
+        context.prec = max(precision, 2)
+        return (left - right).copy_abs()
 
 
 def _resolve_candidates(

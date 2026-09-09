@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -33,6 +35,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.output:
+            for source in (args.internal, args.external, args.rules):
+                if args.output.resolve() == source.resolve() or (
+                    args.output.exists() and args.output.samefile(source)
+                ):
+                    raise ValueError("output must not overwrite an input or rules file")
         rules = load_rules(args.rules)
         internal = load_transactions(args.internal, Source.INTERNAL)
         external = load_transactions(args.external, Source.EXTERNAL)
@@ -46,15 +54,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.internal,
                 args.external,
             )
+        rendered = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+        if args.output:
+            _write_report(args.output, rendered)
+        else:
+            sys.stdout.write(rendered)
     except (OSError, ValueError) as error:
         parser.error(str(error))
-
-    rendered = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
-    if args.output:
-        args.output.write_text(rendered, encoding="utf-8")
-    else:
-        sys.stdout.write(rendered)
     return 0
+
+
+def _write_report(path: Path, rendered: str) -> None:
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(rendered)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

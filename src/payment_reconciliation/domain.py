@@ -40,7 +40,7 @@ class Candidate:
     score: int
     reference_equal: bool
     amount_difference: Decimal
-    time_difference_seconds: int
+    time_difference_seconds: Decimal
     amount_within_tolerance: bool
     time_within_tolerance: bool
 

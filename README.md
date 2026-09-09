@@ -1,10 +1,8 @@
 # PayMatch
 
-A deterministic reconciliation pipeline for comparing internal transaction records with bank or payment-provider statements.
+CLI for comparing internal payments with a bank or payment-provider statement. It reports matched rows, amount differences, missing records, duplicate references and ambiguous matches.
 
-Reconciliation is not a database join. References arrive with changed separators and casing, timestamps move across systems, the same amount can appear several times, files contain duplicates, and a confident-looking greedy match can silently consume the wrong row. This project treats uncertainty as an output instead of guessing.
-
-This project explores a class of problems I have worked with professionally. It was designed independently from scratch and contains only synthetic examples—no client code, account data or proprietary matching rules.
+References are normalized before comparison; amount and timestamp tolerances are configurable. A tie stays unresolved instead of being assigned to whichever row happens to come first. The included statements are synthetic; the implementation contains no employer code or customer data.
 
 ## Pipeline
 
@@ -42,9 +40,9 @@ Every result carries the involved IDs, score and evidence used to reach it.
 
 ## Numeric and time rules
 
-- Amounts are parsed directly into `Decimal`, including JSON numeric literals. Binary floating point is not used in matching.
+- Amounts are parsed directly into `Decimal`, including JSON numeric literals. Difference calculations use enough local precision for both inputs, independently of the caller's decimal context.
 - Signed amounts are supported, so refunds do not need a separate representation.
-- Timestamps must contain an explicit UTC offset and are normalized to UTC.
+- Timestamps must contain an explicit UTC offset and are normalized to UTC. Microseconds are retained when testing the matching window.
 - Candidates never cross currencies.
 - Exact normalized references remain candidates outside the time window so amount discrepancies are visible rather than misreported as missing.
 
@@ -67,6 +65,8 @@ Input columns:
 ```text
 id,amount,currency,timestamp,reference
 ```
+
+Reports are written through a temporary file and replaced only after a complete write. The output path cannot be an input statement or the rules file.
 
 JSON may be an array of the same records or an object containing a `transactions` array. Duplicate IDs, naive timestamps, non-finite amounts and malformed currencies fail the run with the source row number.
 
@@ -119,7 +119,7 @@ The suite covers normalization, exact and fuzzy evidence, amount/reference misma
 ## Boundaries
 
 - Duplicate detection currently uses repeated normalized references within one source and currency. A production policy may additionally scope duplicates by merchant or settlement batch.
-- The first slice supports CSV and JSON. XLSX can be added at the input boundary without changing the engine.
+- Inputs are CSV and JSON; XLSX is not supported.
 - Candidate generation uses indexed timestamp windows plus reference lookup. Very large files would benefit from streaming ingestion and database-side candidate batches.
 - `AMBIGUOUS` is intentionally not auto-resolved. An operational system should expose these groups to a reviewer and store the final manual decision.
 - Foreign-exchange reconciliation is out of scope; each currency is reconciled independently.
